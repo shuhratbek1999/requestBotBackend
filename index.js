@@ -11,33 +11,35 @@ const bot = new TelegramBot(BOT_TOKEN, {
   polling: { interval: 300, autoStart: true },
 });
 
-let adminChatId = null;
+let chatIds = [];
+
+// Fayldan o‘qish
 if (fs.existsSync("chat.json")) {
   const data = JSON.parse(fs.readFileSync("chat.json", "utf8"));
-  adminChatId = data.chat_id;
+  chatIds = data.chat_ids || [];
+  console.log("♻️ Saqlangan chat_id lar o‘qildi:", chatIds);
 }
 
-// /start buyrug‘i
 bot.onText(/\/start/, (msg) => {
-  if (adminChatId && adminChatId === msg.chat.id) {
-    bot.sendMessage(msg.chat.id, "Bot allaqachon ishga tushgan ✅");
-    return;
+  const chatId = msg.chat.id;
+
+  if (!chatIds.includes(chatId)) {
+    chatIds.push(chatId);
+    fs.writeFileSync("chat.json", JSON.stringify({ chat_ids: chatIds }));
+    bot.sendMessage(
+      chatId,
+      "✅ Siz botga ulandingiz! Endi so‘rovlar shu yerda chiqadi."
+    );
+  } else {
+    bot.sendMessage(chatId, "Bot allaqachon siz bilan ulanib bo‘lgan ✅");
   }
-
-  adminChatId = msg.chat.id;
-  fs.writeFileSync("chat.json", JSON.stringify({ chat_id: adminChatId }));
-
-  bot.sendMessage(
-    adminChatId,
-    "✅ Bot ishga tushdi! Endi frontdan so‘rov yuborsangiz, shu yerda chiqadi."
-  );
 });
 
 function validateRequest(name, phone, email) {
   const errors = [];
 
-  if (!name || name.trim().length < 3) {
-    errors.push("Ism kamida 3 ta belgidan iborat bo‘lishi kerak");
+  if (!name || name.trim().length < 2) {
+    errors.push("Ism kamida 2 ta belgidan iborat bo‘lishi kerak");
   }
 
   const phoneRegex = /^\+?\d{9,15}$/;
@@ -62,10 +64,10 @@ app.post("/send_request", async (req, res) => {
     return res.status(400).json({ success: false, errors });
   }
 
-  if (!adminChatId || adminChatId === 0) {
+  if (!chatIds.length) {
     return res.status(400).json({
       success: false,
-      message: "Bot hali hech kim bilan /start orqali aloqa o‘rnatmagan!",
+      message: "Hali hech kim /start orqali botga ulanmagan!",
     });
   }
 
@@ -78,8 +80,13 @@ app.post("/send_request", async (req, res) => {
 `;
 
   try {
-    await bot.sendMessage(adminChatId, text, { parse_mode: "HTML" });
-    res.status(200).json({ success: true, message: "So‘rov botga yuborildi!" });
+    for (const id of chatIds) {
+      await bot.sendMessage(id, text, { parse_mode: "HTML" });
+    }
+    res.json({
+      success: true,
+      message: "So‘rov barcha foydalanuvchilarga yuborildi!",
+    });
   } catch (error) {
     console.error("Xatolik:", error.message);
     res
