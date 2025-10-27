@@ -7,72 +7,80 @@ const app = express();
 app.use(express.json());
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const bot = new TelegramBot(BOT_TOKEN, {
-  polling: { interval: 300, autoStart: true },
-});
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-let chatIds = [];
-
-// Fayldan o‘qish
+let adminChatId = null;
 if (fs.existsSync("chat.json")) {
   const data = JSON.parse(fs.readFileSync("chat.json", "utf8"));
-  chatIds = data.chat_ids || [];
-  console.log("♻️ Saqlangan chat_id lar o‘qildi:", chatIds);
+  adminChatId = data.chat_id;
+  console.log("♻️ Saqlangan chat_id o‘qildi:", adminChatId);
 }
 
-bot.onText(/\/start/, (msg) => {
-  const chatId = msg.chat.id;
+const lastRequests = {}; // { phone: timestamp }
 
-  if (!chatIds.includes(chatId)) {
-    chatIds.push(chatId);
-    fs.writeFileSync("chat.json", JSON.stringify({ chat_ids: chatIds }));
-    bot.sendMessage(
-      chatId,
-      "✅ Siz botga ulandingiz! Endi so‘rovlar shu yerda chiqadi."
-    );
-  } else {
-    bot.sendMessage(chatId, "Bot allaqachon siz bilan ulanib bo‘lgan ✅");
+bot.onText(/\/start/, (msg) => {
+  if (adminChatId && adminChatId === msg.chat.id) {
+    bot.sendMessage(msg.chat.id, "Bot allaqachon ishga tushgan ✅");
+    return;
   }
+
+  adminChatId = msg.chat.id;
+  fs.writeFileSync("chat.json", JSON.stringify({ chat_id: adminChatId }));
+
+  bot.sendMessage(
+    adminChatId,
+    "✅ Bot ishga tushdi! Endi frontdan so‘rov yuborsangiz, shu yerda chiqadi."
+  );
 });
 
-function validateRequest(name, phone, email) {
-  const errors = [];
+// 📩 Frontenddan so‘rov
+app.post("/send_request", async (req, res) => {
+  const { name, phone, email, message } = req.body;
 
-  if (!name || name.trim().length < 2) {
-    errors.push("Ism kamida 2 ta belgidan iborat bo‘lishi kerak");
+  if (!name || name.trim().length < 3) {
+    return res.status(400).json({
+      success: false,
+      message: "Ism kamida 3 ta belgidan iborat bo‘lishi kerak.",
+    });
   }
 
   const phoneRegex = /^\+?\d{9,15}$/;
   if (!phone || !phoneRegex.test(phone)) {
-    errors.push("Telefon raqami noto‘g‘ri formatda");
+    return res
+      .status(400)
+      .json({ success: false, message: "Telefon raqam noto‘g‘ri formatda." });
   }
 
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!email || !emailRegex.test(email)) {
-    errors.push("Email noto‘g‘ri formatda");
+    return res
+      .status(400)
+      .json({ success: false, message: "Email noto‘g‘ri formatda." });
   }
 
-  return errors;
-}
-
-// Frontenddan so‘rov
-app.post("/send_request", async (req, res) => {
-  const { name, phone, email, message } = req.body;
-
-  const errors = validateRequest(name, phone, email);
-  if (errors.length > 0) {
-    return res.status(400).json({ success: false, errors });
+  const now = Date.now();
+  const cooldown = 60 * 60 * 1000;
+  if (lastRequests[phone] && now - lastRequests[phone] < cooldown) {
+    const waitTime = Math.ceil(
+      (cooldown - (now - lastRequests[phone])) / 1000 / 60
+    );
+    return res.status(429).json({
+      success: false,
+      message: `Iltimos, ${waitTime} daqiqadan keyin qayta yuboring.`,
+    });
   }
 
-  if (!chatIds.length) {
+  lastRequests[phone] = now;
+
+  if (!adminChatId) {
     return res.status(400).json({
       success: false,
-      message: "Hali hech kim /start orqali botga ulanmagan!",
+      message: "Bot hali /start buyrug‘i orqali ishga tushirilmagan.",
     });
   }
 
   const text = `
-📩 <b>Yangi so‘rov keldi:</b>
+📩 <b>Yangi so‘rov:</b>
 👤 Ism: ${name}
 📞 Tel: ${phone}
 📧 Email: ${email}
@@ -80,13 +88,10 @@ app.post("/send_request", async (req, res) => {
 `;
 
   try {
-    for (const id of chatIds) {
-      await bot.sendMessage(id, text, { parse_mode: "HTML" });
-    }
-    res.json({
-      success: true,
-      message: "So‘rov barcha foydalanuvchilarga yuborildi!",
-    });
+    await bot.sendMessage(adminChatId, text, { parse_mode: "HTML" });
+    res
+      .status(200)
+      .json({ success: true, message: "So‘rov muvaffaqiyatli yuborildi!" });
   } catch (error) {
     console.error("Xatolik:", error.message);
     res
